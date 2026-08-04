@@ -97,6 +97,19 @@ MyAgentic/
 └── README.md
 ```
 
+# 可视化展示
+
+> 针对 code、img等数据入库展示
+![alt text](images/img.png)
+
+> 待用大模型达成召回
+![alt text](images/img_1.png)
+> 阿里云图生文模型针对图像数据
+> 图生文 -> 文本转为向量 -> 向量作为元数据与图片组合作为索引 -> 检索图片
+
+> 待开发ing
+
+
 ## 快速开始
 
 ### 1. 环境要求

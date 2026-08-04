@@ -27,7 +27,6 @@ logs/
 # Temporary screenshots
 /img.png
 /img_1.png
-/images/
 
 # Frontend
 node_modules/
