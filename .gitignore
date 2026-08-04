@@ -1,0 +1,42 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+
+# Runtime data
+data/
+storage/
+artifacts/
+logs/
+*.db
+*.sqlite3
+
+# Secrets
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temporary screenshots
+/img.png
+/img_1.png
+/images/
+
+# Frontend
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/

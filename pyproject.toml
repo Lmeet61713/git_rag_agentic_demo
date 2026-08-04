@@ -1,0 +1,38 @@
+[project]
+name = "my-agentic"
+version = "0.1.0"
+requires-python = "==3.13.*"
+dependencies = [
+    "aiosqlite",
+    "cryptography",
+    "fastapi",
+    "httpx",
+    "itsdangerous",
+    "pydantic-settings",
+    "sqlalchemy",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+rag = [
+    "chromadb",
+    "langchain",
+    "langgraph",
+    "onnxruntime",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+ignore = ["B008", "BLE001"]
