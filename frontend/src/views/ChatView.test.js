@@ -50,6 +50,10 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('owner/demo / README.md')
     expect(wrapper.text()).toContain('文档检索')
     expect(wrapper.text()).toContain('README 内容')
+    expect(wrapper.text()).toContain('展开联网结果 (1)')
+    expect(wrapper.text()).not.toContain('打开链接')
+    const expandButton = wrapper.findAll('button').find((button) => button.text() === '展开联网结果 (1)')
+    await expandButton.trigger('click')
     expect(wrapper.text()).toContain('打开链接')
     expect(
       wrapper.findAll('a').some((link) => link.attributes('href') === 'https://example.com/news'),

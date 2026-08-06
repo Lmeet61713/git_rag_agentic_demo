@@ -31,6 +31,18 @@ function renderMarkdown(content) {
   return DOMPurify.sanitize(marked.parse(content || ''))
 }
 
+function webSources(msg) {
+  return (msg.sources || []).filter((source) => source.file_type === 'web')
+}
+
+function localSources(msg) {
+  return (msg.sources || []).filter((source) => source.file_type !== 'web')
+}
+
+function toggleWeb(msg) {
+  msg.webExpanded = !msg.webExpanded
+}
+
 function inferMode(content) {
   if (content.startsWith('当前 DeepSeek 模型配置') || content.startsWith('当前 阿里云 DashScope 模型配置')) {
     return 'config_error'
@@ -94,6 +106,7 @@ async function selectSession(sessionId) {
       content: item.content,
       sources: item.sources || [],
       streaming: false,
+      webExpanded: false,
       mode: item.mode || inferMode(item.content),
       tool: item.tool || '',
     }))
@@ -158,7 +171,14 @@ async function send() {
   if (!text || sending.value) return
   sending.value = true
   messages.value.push({ role: 'user', content: text, sources: [] })
-  messages.value.push({ role: 'assistant', content: '', sources: [], streaming: true, tool: '' })
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    sources: [],
+    streaming: true,
+    tool: '',
+    webExpanded: false,
+  })
   input.value = ''
   const current = messages.value[messages.value.length - 1]
   try {
@@ -261,9 +281,9 @@ onMounted(loadSessions)
                   Ollama 保底
                 </el-tag>
               </div>
-              <div v-if="msg.sources && msg.sources.length" class="sources">
+              <div v-if="localSources(msg).length" class="sources">
                 <div class="sources-title">来源</div>
-                <div v-for="(source, si) in msg.sources" :key="si" class="source-card">
+                <div v-for="(source, si) in localSources(msg)" :key="'local-' + si" class="source-card">
                   <div class="source-head">
                     <strong>{{ source.project_id }} / {{ source.path }}</strong>
                     <el-tag size="small" effect="plain">{{ source.file_type }}</el-tag>
@@ -276,10 +296,28 @@ onMounted(loadSessions)
                     type="primary"
                   >
                     {{ source.file_type === 'web' ? '打开链接' : source.file_type === 'image' ? '查看图片' : '查看文件' }}
-                  </el-link>
+                    </el-link>
+                  </div>
                 </div>
               </div>
-            </div>
+              <div v-if="webSources(msg).length" class="sources web-sources">
+                <div class="web-sources-head">
+                  <span>联网结果</span>
+                  <el-button text size="small" @click="toggleWeb(msg)">
+                    {{ msg.webExpanded ? '收起联网结果' : `展开联网结果 (${webSources(msg).length})` }}
+                  </el-button>
+                </div>
+                <template v-if="msg.webExpanded">
+                  <div v-for="(source, si) in webSources(msg)" :key="'web-' + si" class="source-card">
+                    <div class="source-head">
+                      <strong>{{ source.path }}</strong>
+                      <el-tag size="small" effect="plain">web</el-tag>
+                    </div>
+                    <p v-if="source.text" class="source-snippet">{{ source.text.slice(0, 160) }}</p>
+                    <el-link :href="source.path" target="_blank" type="primary">打开链接</el-link>
+                  </div>
+                </template>
+              </div>
           </div>
           <div v-if="!loadingMessages && !messages.length" class="chat-empty">
             从左侧选择会话，或新建会话后开始提问。
@@ -476,6 +514,20 @@ onMounted(loadSessions)
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 4px;
+}
+
+.web-sources {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.web-sources-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .source-head {

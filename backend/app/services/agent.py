@@ -71,8 +71,8 @@ PROVIDER_LABELS = {
 }
 
 GENERAL_CHAT_FALLBACK = (
-    "我主要回答已入库 GitHub 仓库的代码、文档、图片和项目概览问题。"
-    "你刚才的问题不属于仓库问答，我暂时不擅长，建议换一个与项目相关的问题。"
+    "你刚才的问题不属于仓库问答，我暂时没有可靠答案；"
+    "可以换一个与仓库相关的问题，或配置模型后让我自由回答或联网搜索。"
 )
 CHAT_SYSTEM_PROMPT = (
     "你是 MyAgentic 的本地代码助手。用户正在和你闲聊或问与仓库无关的问题。"
@@ -107,6 +107,17 @@ WEB_SEARCH_MARKERS = [
     "实时",
     "网上的",
     "网络上",
+]
+EVERYDAY_MARKERS = [
+    "番茄",
+    "鸡蛋",
+    "菜谱",
+    "食谱",
+    "做菜",
+    "做饭",
+    "怎么做好吃",
+    "家常菜",
+    "烹饪",
 ]
 WEB_SEARCH_SYSTEM_PROMPT = (
     "你是 MyAgentic 的本地代码助手。用户要求联网搜索。"
@@ -399,6 +410,27 @@ def _repo_meta_answer(message: str, repos: list[Repo]) -> str | None:
 
 def _normalize_repo_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _has_repo_context(
+    message: str,
+    repos: list[Repo],
+    recent: list,
+) -> bool:
+    haystack = f"{message} {' '.join(item.content for item in recent[-6:])}".lower()
+    if any(
+        keyword in haystack
+        for keyword in ("仓库", "项目", "代码库", "存储库", "repo")
+    ):
+        return True
+    return any(
+        repo.full_name.lower() in haystack or repo.repo.lower() in haystack
+        for repo in repos
+    )
+
+
+def _is_everyday_query(message: str) -> bool:
+    return any(marker in message for marker in EVERYDAY_MARKERS)
 
 
 def _language_label(value: str) -> str:
@@ -702,14 +734,22 @@ def _forced_non_retrieval_answer(
             ),
             "tool": "app_guide",
         }
-    if any(marker in message for marker in REPO_BRIEF_MARKERS):
+    if any(marker in message for marker in REPO_BRIEF_MARKERS) and _has_repo_context(
+        message,
+        repos,
+        recent,
+    ):
         answer = _repo_brief_answer(message, repos, language_counts)
         return {
             "answer": answer
             or "当前还没有可展示的仓库，请先登录并刷新仓库列表。",
             "tool": "repo_brief",
         }
-    if any(marker in message for marker in intro_markers):
+    if any(marker in message for marker in intro_markers) and _has_repo_context(
+        message,
+        repos,
+        recent,
+    ):
         answer = _project_intro_answer(message, repos, recent, language_counts)
         return {
             "answer": answer or "请告诉我你想了解哪个仓库，例如 `Lmeet61713/YueDu`。",
@@ -1013,6 +1053,18 @@ async def _plan(
             "tool": forced["tool"],
         }
 
+    if _is_everyday_query(message) and not _has_repo_context(message, repos, recent):
+        if any(marker in message for marker in WEB_SEARCH_MARKERS):
+            return await _web_search_plan(
+                db,
+                session,
+                message,
+                web_config,
+                config,
+                fallback_config,
+            )
+        return _general_chat_plan(session, message, config)
+
     if any(marker in message for marker in WEB_SEARCH_MARKERS):
         return await _web_search_plan(
             db,
@@ -1039,6 +1091,21 @@ async def _plan(
 
     selection = await _select_tool_with_llm(config, message)
     if selection is not None:
+        if selection.tool in {"repo_brief", "project_intro"} and not _has_repo_context(
+            message,
+            repos,
+            recent,
+        ):
+            if any(marker in message for marker in WEB_SEARCH_MARKERS):
+                return await _web_search_plan(
+                    db,
+                    session,
+                    message,
+                    web_config,
+                    config,
+                    fallback_config,
+                )
+            return _general_chat_plan(session, message, config)
         if selection.tool == "web_search":
             return await _web_search_plan(
                 db,

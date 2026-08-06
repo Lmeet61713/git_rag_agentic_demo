@@ -205,6 +205,21 @@ def test_repo_brief_text_lists_repos_without_marker_gate():
     assert "Python" in answer
 
 
+def test_has_repo_context_detection():
+    repos = [
+        Repo(
+            id=1,
+            user_id=1,
+            owner="owner",
+            repo="demo",
+            full_name="owner/demo",
+        )
+    ]
+    assert not agent._has_repo_context("番茄炒鸡蛋怎么做？", repos, [])
+    assert agent._has_repo_context("仓库里有什么项目", repos, [])
+    assert agent._has_repo_context("介绍一下 owner/demo", repos, [])
+
+
 @pytest.mark.asyncio
 async def test_personalmind_informal_intro_returns_project_intro(monkeypatch):
     init_database()
@@ -241,6 +256,75 @@ async def test_personalmind_informal_intro_returns_project_intro(monkeypatch):
         assert sources == []
         assert "Lmeet61713/PersonalMind_AI" in answer
         assert "个人 AI 助手项目" in answer
+
+
+@pytest.mark.asyncio
+async def test_everyday_query_does_not_trigger_repo_brief(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_select(_config, _message):
+        return ToolSelection(tool="repo_brief", reason="模型误判")
+
+    monkeypatch.setattr(agent, "_select_tool_with_llm", fake_select)
+    async with database.session_factory() as db:
+        user = User(github_id="212", username="everyday-query-tester")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        repo = Repo(
+            user_id=user.id,
+            owner="owner",
+            repo="guard-demo",
+            full_name="owner/guard-demo",
+            index_status="indexed",
+            summary="README 摘录：示例项目",
+        )
+        db.add(repo)
+        await db.commit()
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "番茄炒鸡蛋怎么做？",
+        )
+        assert session_id is not None
+        assert tool == "general_chat"
+        assert sources == []
+        assert "不属于仓库问答" in answer
+
+
+@pytest.mark.asyncio
+async def test_repo_brief_question_returns_repo_list(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+    async with database.session_factory() as db:
+        user = User(github_id="213", username="repo-brief-ok")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        repo = Repo(
+            user_id=user.id,
+            owner="owner",
+            repo="brief-demo",
+            full_name="owner/brief-demo",
+            index_status="indexed",
+            summary="README 摘录：示例项目\n主要语言：python 3",
+        )
+        db.add(repo)
+        await db.commit()
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "仓库里有什么项目",
+        )
+        assert session_id is not None
+        assert tool == "repo_brief"
+        assert sources == []
+        assert "owner/brief-demo" in answer
 
 
 @pytest.mark.asyncio
