@@ -8,7 +8,7 @@ from backend.app.api.deps import get_current_user
 from backend.app.config import get_settings
 from backend.app.database import get_session
 from backend.app.models import IndexedFile, Repo, User
-from backend.app.schemas import IndexJobOut, RepoOut
+from backend.app.schemas import IndexJobOut, RepoImportIn, RepoOut, SyncLogOut
 from backend.app.services import index_service, repo_service, sync_service, vector_store
 
 router = APIRouter()
@@ -28,6 +28,38 @@ async def list_user_repos(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"同步 GitHub 仓库失败：{exc}") from exc
     return [RepoOut.model_validate(repo) for repo in repos]
+
+
+@router.post("/import", response_model=IndexJobOut)
+async def import_public_repo(
+    payload: RepoImportIn,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    try:
+        owner, repo = repo_service.parse_repo_url(payload.url)
+        item = await repo_service.import_repo(db, user, owner, repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"导入仓库失败：{exc}") from exc
+    job = await index_service.create_index_job(item.id)
+    background_tasks.add_task(index_service.run_index_job, job.id)
+    return IndexJobOut.model_validate(job)
+
+
+@router.get("/{owner}/{repo}/logs", response_model=list[SyncLogOut])
+async def repo_sync_logs(
+    owner: str,
+    repo: str,
+    limit: int = 50,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    item = await _get_repo(db, user, owner, repo)
+    logs = await sync_service.list_sync_logs(db, item.id, limit=max(1, min(limit, 200)))
+    return [SyncLogOut.model_validate(log) for log in logs]
 
 
 async def _get_repo(db: AsyncSession, user: User, owner: str, repo: str) -> Repo:
@@ -87,6 +119,7 @@ async def delete_repo_index(
     await db.execute(IndexedFile.__table__.delete().where(IndexedFile.repo_id == item.id))
     item.index_status = "not_indexed"
     item.last_indexed_at = None
+    item.summary = None
     await db.commit()
     mirror = sync_service.repo_mirror_path(owner, repo)
     resolved = mirror.resolve()

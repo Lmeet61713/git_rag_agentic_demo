@@ -1,7 +1,11 @@
 import asyncio
 from pathlib import Path
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.app.config import get_settings
+from backend.app.models import SyncLog
 
 
 def repo_mirror_path(owner: str, repo: str) -> Path:
@@ -56,3 +60,34 @@ def repo_size_mb(target: Path) -> float:
         except OSError:
             continue
     return total / (1024 * 1024)
+
+
+async def record_sync_log(
+    db: AsyncSession,
+    repo_id: int,
+    action: str = "sync",
+    status: str = "success",
+    message: str = "",
+    commit_sha: str | None = None,
+) -> SyncLog:
+    entry = SyncLog(
+        repo_id=repo_id,
+        action=action,
+        status=status,
+        message=message,
+        commit_sha=commit_sha,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return entry
+
+
+async def list_sync_logs(db: AsyncSession, repo_id: int, limit: int = 50) -> list[SyncLog]:
+    result = await db.execute(
+        select(SyncLog)
+        .where(SyncLog.repo_id == repo_id)
+        .order_by(SyncLog.id.desc())
+        .limit(limit)
+    )
+    return list(reversed(list(result.scalars())))

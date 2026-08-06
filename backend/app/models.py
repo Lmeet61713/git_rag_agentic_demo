@@ -32,8 +32,10 @@ class Repo(Base):
     html_url: Mapped[str] = mapped_column(String(512), default="")
     default_branch: Mapped[str] = mapped_column(String(64), default="main")
     last_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    github_created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     index_status: Mapped[str] = mapped_column(String(16), default="not_indexed")
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -48,6 +50,18 @@ class IndexJob(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class SyncLog(Base):
+    __tablename__ = "sync_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_id: Mapped[int] = mapped_column(ForeignKey("repos.id"), index=True)
+    action: Mapped[str] = mapped_column(String(32), default="sync")
+    status: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text, default="")
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class IndexedFile(Base):
@@ -80,6 +94,8 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[list] = mapped_column(JSON, default=list)
+    tool: Mapped[str] = mapped_column(String(32), default="search")
+    mode: Mapped[str] = mapped_column(String(32), default="llm")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

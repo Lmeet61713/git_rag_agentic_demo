@@ -2,11 +2,13 @@ import re
 
 from backend.app.config import get_settings
 from backend.app.services import vector_store
-from backend.app.services.embedding import get_embedding
+from backend.app.services.embedding import chinese_tokens, get_embedding
 
 
 def _keyword_score(query: str, text: str, path: str) -> float:
-    tokens = {token for token in re.findall(r"[\w\u4e00-\u9fff]+", query.lower()) if len(token) > 1}
+    tokens = {token for token in chinese_tokens(query)}
+    if not tokens:
+        tokens = {token for token in re.findall(r"[\w\u4e00-\u9fff]+", query.lower()) if len(token) > 1}
     if not tokens:
         return 0.0
     text_lower = text.lower()
@@ -17,7 +19,51 @@ def _keyword_score(query: str, text: str, path: str) -> float:
             score += 1.0
         if token in path_lower:
             score += 2.0
-    return score / len(tokens)
+    return min(score / len(tokens), 1.5)
+
+
+def _combined_score(vector_score: float, keyword_score: float) -> float:
+    keyword = min(max(keyword_score, 0.0), 1.0)
+    if keyword <= 0.0:
+        return 0.65 * vector_score
+    if vector_score <= 0.0:
+        return 0.45 * keyword
+    return 0.65 * vector_score + 0.35 * keyword
+
+
+def _merge_candidates(vector_candidates: list[dict], keyword_candidates: list[dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    keyword_by_id = {item["id"]: item for item in keyword_candidates}
+    for item in vector_candidates:
+        keyword_item = keyword_by_id.pop(item["id"], None)
+        keyword_score = (
+            _keyword_score(
+                item.get("_query", ""),
+                keyword_item.get("text", ""),
+                keyword_item.get("path", ""),
+            )
+            if keyword_item
+            else 0.0
+        )
+        item["score"] = _combined_score(float(item.get("score", 0.0)), keyword_score)
+        merged[item["id"]] = item
+    for item in keyword_candidates:
+        if item["id"] in merged:
+            continue
+        score = _keyword_score(item.get("_query", ""), item.get("text", ""), item.get("path", ""))
+        if score > 0:
+            item["score"] = _combined_score(0.0, score)
+            merged[item["id"]] = item
+    return merged
+
+
+def _filter_by_confidence(results: list[dict]) -> list[dict]:
+    if not results:
+        return []
+    settings = get_settings()
+    top_score = float(results[0]["score"])
+    threshold = max(settings.search_min_score, top_score - settings.search_top1_gap)
+    return [item for item in results if float(item["score"]) >= threshold]
 
 
 def _readmeish(path: str) -> bool:
@@ -39,7 +85,6 @@ async def search(
     settings = get_settings()
     top_k = top_k or settings.search_top_k
     embedding = get_embedding()
-    vector = embedding.embed([query])[0]
     filters: dict = {}
     if project_id:
         filters["project_id"] = project_id
@@ -47,22 +92,42 @@ async def search(
         filters["file_type"] = file_type
 
     store = vector_store.get_vector_store()
-    candidates = await store.query(vector, top_k=top_k * 3, filters=filters)
-    results = []
-    for item in candidates:
-        combined = 0.7 * item["score"] + 0.3 * _keyword_score(query, item["text"], item["path"])
-        results.append(
+    vector_candidates = await store.query(embedding.embed([query])[0], top_k=top_k * 3, filters=filters)
+    keyword_candidates = await store.keyword_candidates(filters)
+    for item in vector_candidates:
+        item["_query"] = query
+    for item in keyword_candidates:
+        item["_query"] = query
+    merged = _merge_candidates(vector_candidates, keyword_candidates)
+    results = sorted(
+        (
             {
                 "project_id": item["project_id"],
                 "path": item["path"],
                 "file_type": item["file_type"],
                 "language": item.get("language"),
                 "text": item["text"],
-                "score": combined,
+                "score": float(item["score"]),
             }
-        )
-    results.sort(key=lambda item: item["score"], reverse=True)
-    return results[:top_k]
+            for item in merged.values()
+        ),
+        key=lambda item: item["score"],
+        reverse=True,
+    )
+    return _filter_by_confidence(results)[:top_k]
+
+
+async def project_search(
+    query: str,
+    project_id: str | None = None,
+    top_k: int | None = None,
+) -> list[dict]:
+    return await search(
+        query,
+        project_id=project_id,
+        file_type="project_summary",
+        top_k=top_k or 6,
+    )
 
 
 async def project_overview(project_id: str | None, top_k: int | None = None) -> list[dict]:
@@ -71,5 +136,15 @@ async def project_overview(project_id: str | None, top_k: int | None = None) -> 
         results = await search(query, project_id=project_id, top_k=top_k or 12)
     else:
         results = await search(query, top_k=top_k or 12)
-    results.sort(key=lambda item: (0 if _readmeish(item["path"]) else 1, -item["score"]))
+    summary_results = await project_search(query, project_id=project_id, top_k=4)
+    by_id = {item["path"]: item for item in results}
+    for item in summary_results:
+        by_id[item["path"]] = item
+    results = list(by_id.values())
+    results.sort(
+        key=lambda item: (
+            0 if item["file_type"] == "project_summary" else 1 if _readmeish(item["path"]) else 2,
+            -item["score"],
+        )
+    )
     return results

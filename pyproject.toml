@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "httpx",
     "itsdangerous",
+    "jieba",
     "pydantic-settings",
     "sqlalchemy",
     "uvicorn[standard]",

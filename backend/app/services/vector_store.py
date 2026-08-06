@@ -14,6 +14,8 @@ class VectorStore(Protocol):
 
     async def query(self, vector: list[float], top_k: int = 8, filters: dict | None = None) -> list[dict]: ...
 
+    async def keyword_candidates(self, filters: dict | None = None) -> list[dict]: ...
+
     async def count(self) -> int: ...
 
 
@@ -82,6 +84,33 @@ class SqliteVectorStore:
                 "score": float(score),
             }
             for row, score in scored[:top_k]
+        ]
+
+    async def keyword_candidates(self, filters: dict | None = None) -> list[dict]:
+        filters = filters or {}
+        if database.session_factory is None:
+            database.init_database()
+        async with database.session_factory() as db:
+            stmt = select(VectorRecord)
+            if filters.get("project_id"):
+                stmt = stmt.where(VectorRecord.project_id == filters["project_id"])
+            if filters.get("file_type"):
+                stmt = stmt.where(VectorRecord.file_type == filters["file_type"])
+            if filters.get("language"):
+                stmt = stmt.where(VectorRecord.language == filters["language"])
+            rows = list((await db.execute(stmt)).scalars())
+        return [
+            {
+                "id": row.id,
+                "project_id": row.project_id,
+                "path": row.path,
+                "file_type": row.file_type,
+                "language": row.language,
+                "text": row.text,
+                "metadata": row.metadata_json,
+                "score": 0.0,
+            }
+            for row in rows
         ]
 
     async def count(self) -> int:
@@ -188,6 +217,36 @@ class ChromaVectorStore:
                         "score": float(1.0 - distance),
                     }
                 )
+        return items
+
+    async def keyword_candidates(self, filters: dict | None = None) -> list[dict]:
+        filters = filters or {}
+        where = None
+        conditions = []
+        if filters.get("project_id"):
+            conditions.append({"project_id": filters["project_id"]})
+        if filters.get("file_type"):
+            conditions.append({"file_type": filters["file_type"]})
+        if filters.get("language"):
+            conditions.append({"language": filters["language"]})
+        if conditions:
+            where = conditions[0] if len(conditions) == 1 else {"$and": conditions}
+        result = self.collection.get(where=where, include=["documents", "metadatas"])
+        items = []
+        for index, doc in enumerate(result.get("documents") or []):
+            metadata = (result.get("metadatas") or [])[index] or {}
+            items.append(
+                {
+                    "id": (result.get("ids") or [])[index],
+                    "project_id": metadata.get("project_id", ""),
+                    "path": metadata.get("path", ""),
+                    "file_type": metadata.get("file_type", ""),
+                    "language": metadata.get("language"),
+                    "text": doc,
+                    "metadata": metadata,
+                    "score": 0.0,
+                }
+            )
         return items
 
     async def count(self) -> int:

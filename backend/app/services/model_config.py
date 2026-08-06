@@ -1,3 +1,6 @@
+import logging
+
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -5,6 +8,89 @@ from backend.app.config import get_settings
 from backend.app.models import ModelConfig
 from backend.app.schemas import ModelConfigIn
 from backend.app.security import decrypt_secret, encrypt_secret
+
+DEEPSEEK_MODELS = [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
+]
+DASHSCOPE_MODELS = [
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-flash",
+    "qwen3.5-plus",
+    "qwen3.5-flash",
+    "qwen3-max",
+    "qwen3-vl-plus",
+    "qwen3-vl-max",
+    "qwen-turbo",
+    "qwen-plus",
+    "qwen-max",
+    "qwen-long",
+    "qwen-vl-plus",
+    "qwen-vl-max",
+]
+
+logger = logging.getLogger(__name__)
+
+
+def _provider_default_base_url(provider: str) -> str:
+    settings = get_settings()
+    if provider == "deepseek":
+        return settings.deepseek_base_url
+    if provider == "dashscope":
+        return settings.dashscope_base_url
+    if provider == "ollama":
+        return settings.ollama_base_url
+    return ""
+
+
+async def _list_ollama_models() -> list[str]:
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            response = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+            response.raise_for_status()
+            names = [
+                item.get("name")
+                for item in response.json().get("models", [])
+                if item.get("name")
+            ]
+            if names:
+                return sorted(names)
+    except Exception as exc:
+        logger.warning("Ollama model list unavailable, fallback to manifest dir: %s", exc)
+    if settings.ollama_models_dir.is_dir():
+        return sorted(item.name for item in settings.ollama_models_dir.iterdir() if item.is_dir())
+    return []
+
+
+async def model_catalog() -> list[dict]:
+    settings = get_settings()
+    return [
+        {
+            "provider": "deepseek",
+            "label": "DeepSeek",
+            "models": DEEPSEEK_MODELS,
+            "base_url": settings.deepseek_base_url,
+            "requires_api_key": True,
+        },
+        {
+            "provider": "dashscope",
+            "label": "阿里云 DashScope",
+            "models": DASHSCOPE_MODELS,
+            "base_url": settings.dashscope_base_url,
+            "requires_api_key": True,
+        },
+        {
+            "provider": "ollama",
+            "label": "本地 Ollama",
+            "models": await _list_ollama_models(),
+            "base_url": settings.ollama_base_url,
+            "requires_api_key": False,
+        },
+    ]
 
 
 async def list_configs(db: AsyncSession, user_id: int) -> list[ModelConfig]:
@@ -41,13 +127,25 @@ async def resolve_active(db: AsyncSession, user_id: int) -> dict | None:
         select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.is_active.is_(True))
     )
     config = result.scalar_one_or_none()
-    if config is not None and config.api_key_enc:
-        return {
-            "provider": config.provider,
-            "model": config.model_name,
-            "api_key": decrypt_secret(config.api_key_enc),
-            "base_url": config.base_url,
-        }
+    if config is not None:
+        api_key = ""
+        config_error = None
+        try:
+            if config.api_key_enc:
+                api_key = decrypt_secret(config.api_key_enc)
+        except Exception:
+            logger.exception("resolve_active decrypt failed for user=%s", user_id)
+            config_error = "invalid_api_key"
+        if config.provider != "ollama" and not api_key:
+            config_error = config_error or "missing_api_key"
+        if config.provider == "ollama" or api_key or config_error:
+            return {
+                "provider": config.provider,
+                "model": config.model_name,
+                "api_key": api_key,
+                "base_url": config.base_url or _provider_default_base_url(config.provider),
+                "config_error": config_error,
+            }
     settings = get_settings()
     if settings.deepseek_api_key and settings.deepseek_model:
         return {
@@ -64,3 +162,27 @@ async def resolve_active(db: AsyncSession, user_id: int) -> dict | None:
             "base_url": settings.dashscope_base_url,
         }
     return None
+
+
+async def resolve_fallback(db: AsyncSession, user_id: int) -> dict | None:
+    """Return the local Ollama config as a backup when remote LLM calls fail."""
+    result = await db.execute(
+        select(ModelConfig)
+        .where(
+            ModelConfig.user_id == user_id,
+            ModelConfig.provider == "ollama",
+            ModelConfig.model_name != "",
+        )
+        .order_by(ModelConfig.is_active.desc(), ModelConfig.id.desc())
+    )
+    configs = list(result.scalars())
+    if not configs:
+        return None
+    config = configs[0]
+    return {
+        "provider": "ollama",
+        "model": config.model_name,
+        "api_key": "",
+        "base_url": config.base_url or _provider_default_base_url("ollama"),
+        "config_error": None,
+    }

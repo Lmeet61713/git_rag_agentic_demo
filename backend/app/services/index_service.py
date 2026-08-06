@@ -1,8 +1,10 @@
+from collections import Counter
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 
 from backend.app import database
+from backend.app.config import get_settings
 from backend.app.models import IndexedFile, IndexJob, Repo
 from backend.app.services import parser_service, sync_service, vector_store
 from backend.app.services.embedding import get_embedding
@@ -21,6 +23,41 @@ def plan_incremental(
     embed_paths = {chunk.path for chunk in chunks if chunk.path in changed_paths}
     embed_chunks = [chunk for chunk in chunks if chunk.path in embed_paths]
     return embed_chunks, changed_paths | removed_paths
+
+
+def build_index_summary(
+    manifest: list[dict],
+    chunks: list[parser_service.DocumentChunk],
+    commit_sha: str | None = None,
+) -> str:
+    files = [item for item in manifest if not item.get("skipped")]
+    skipped = [item for item in manifest if item.get("skipped")]
+    counts = Counter(item["file_type"] for item in files)
+    languages = Counter(item.get("language") for item in files if item.get("language"))
+    top_dirs = Counter(item["path"].split("/", 1)[0] for item in files)
+    lines = [
+        f"索引完成：{len(files)} 个文件，{len(chunks)} 个向量分块，跳过 {len(skipped)} 个文件。",
+        (
+            f"类型统计：代码 {counts.get('code', 0)} 个，"
+            f"文档 {counts.get('doc', 0)} 个，图片 {counts.get('image', 0)} 个。"
+        ),
+    ]
+    if languages:
+        top_languages = "、".join(f"{name} {count}" for name, count in languages.most_common(5))
+        lines.append(f"主要语言：{top_languages}。")
+    if top_dirs:
+        top_directories = "、".join(f"{name} {count}" for name, count in top_dirs.most_common(5))
+        lines.append(f"主要目录：{top_directories}。")
+    readme = next(
+        (chunk for chunk in chunks if chunk.path.rsplit("/", 1)[-1].lower().startswith("readme")),
+        None,
+    )
+    if readme:
+        excerpt = readme.text.strip().replace("\n", " ")[:240]
+        lines.append(f"README 摘录：{excerpt}")
+    if commit_sha:
+        lines.append(f"索引 commit：{commit_sha}。")
+    return "\n".join(lines)
 
 
 async def create_index_job(repo_id: int) -> IndexJob:
@@ -50,7 +87,13 @@ async def run_index_job(job_id: int) -> None:
         await db.commit()
 
     try:
-        commit_sha = await sync_service.clone_repo(repo.owner, repo.repo)
+        try:
+            commit_sha = await sync_service.clone_repo(repo.owner, repo.repo)
+        except Exception:
+            mirror = sync_service.repo_mirror_path(repo.owner, repo.repo)
+            if not (mirror / ".git").exists():
+                raise
+            commit_sha = await sync_service.current_commit(mirror)
         if database.session_factory is None:
             database.init_database()
         async with database.session_factory() as db:
@@ -60,7 +103,14 @@ async def run_index_job(job_id: int) -> None:
             repo.index_status = "indexing"
             job.stage = "scanning"
             job.progress = 20
-            await db.commit()
+            await sync_service.record_sync_log(
+                db,
+                repo.id,
+                action="sync",
+                status="success",
+                message=f"仓库同步完成，commit {commit_sha}",
+                commit_sha=commit_sha,
+            )
 
         chunks, manifest = await parser_service.build_document_chunks(repo.owner, repo.repo)
         project_id = f"{repo.owner}/{repo.repo}"
@@ -78,25 +128,6 @@ async def run_index_job(job_id: int) -> None:
 
         embed_chunks, touched_paths = plan_incremental(chunks, manifest, previous_hashes)
         embedding = get_embedding()
-        vectors = embedding.embed([chunk.text for chunk in embed_chunks])
-        records = []
-        for chunk, vector in zip(embed_chunks, vectors):
-            records.append(
-                {
-                    "id": f"{project_id}:{chunk.path}:{chunk.chunk_index}",
-                    "project_id": project_id,
-                    "path": chunk.path,
-                    "file_type": chunk.file_type,
-                    "language": chunk.language,
-                    "text": chunk.text,
-                    "vector": vector,
-                    "chunk_index": chunk.chunk_index,
-                    "metadata": {
-                        "symbol": chunk.symbol,
-                        **chunk.metadata,
-                    },
-                }
-            )
 
         if database.session_factory is None:
             database.init_database()
@@ -107,12 +138,36 @@ async def run_index_job(job_id: int) -> None:
             await db.commit()
 
         store = vector_store.get_vector_store()
+        settings = get_settings()
         if previous_hashes:
             for path in sorted(touched_paths):
                 await store.delete(project_id, path)
         else:
             await store.delete(project_id)
-        await store.upsert(records)
+        batch_size = max(1, settings.embedding_batch_size)
+        for start in range(0, len(embed_chunks), batch_size):
+            batch = embed_chunks[start : start + batch_size]
+            vectors = embedding.embed([chunk.text for chunk in batch])
+            records = []
+            for chunk, vector in zip(batch, vectors):
+                records.append(
+                    {
+                        "id": f"{project_id}:{chunk.path}:{chunk.chunk_index}",
+                        "project_id": project_id,
+                        "path": chunk.path,
+                        "file_type": chunk.file_type,
+                        "language": chunk.language,
+                        "text": chunk.text,
+                        "vector": vector,
+                        "chunk_index": chunk.chunk_index,
+                        "metadata": {
+                            "symbol": chunk.symbol,
+                            **chunk.metadata,
+                        },
+                    }
+                )
+            await store.upsert(records)
+            del vectors, records
 
         if database.session_factory is None:
             database.init_database()
@@ -138,6 +193,7 @@ async def run_index_job(job_id: int) -> None:
             repo.last_commit_sha = commit_sha
             repo.index_status = "indexed"
             repo.last_indexed_at = datetime.now(UTC).replace(tzinfo=None)
+            repo.summary = build_index_summary(manifest, chunks, commit_sha=commit_sha)
             job.status = "success"
             job.progress = 100
             job.stage = "writing"
@@ -153,7 +209,14 @@ async def run_index_job(job_id: int) -> None:
                 repo = await db.get(Repo, job.repo_id)
                 if repo is not None:
                     repo.index_status = "failed"
-                await db.commit()
+                if repo is not None:
+                    await sync_service.record_sync_log(
+                        db,
+                        repo.id,
+                        action="sync" if job.stage == "cloning" else "index",
+                        status="failed",
+                        message=str(exc)[:2000],
+                    )
 
 
 async def get_job(job_id: int) -> IndexJob | None:

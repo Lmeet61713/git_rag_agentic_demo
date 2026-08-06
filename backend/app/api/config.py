@@ -30,6 +30,11 @@ async def get_model_configs(
     ]
 
 
+@router.get("/model/catalog")
+async def get_model_catalog():
+    return await model_config.model_catalog()
+
+
 @router.put("/model", response_model=ModelConfigOut)
 async def save_model_config(
     payload: ModelConfigIn,

@@ -27,6 +27,10 @@ export const api = {
     const { data } = await http.post(`/repos/${owner}/${repo}/index`)
     return data
   },
+  async importRepo(url) {
+    const { data } = await http.post('/repos/import', { url })
+    return data
+  },
   async deleteIndex(owner, repo) {
     await http.delete(`/repos/${owner}/${repo}/index`)
   },
@@ -34,8 +38,16 @@ export const api = {
     const { data } = await http.get(`/jobs/${jobId}`)
     return data
   },
+  async syncLogs(owner, repo) {
+    const { data } = await http.get(`/repos/${owner}/${repo}/logs`)
+    return data
+  },
   async configs() {
     const { data } = await http.get('/config/model')
+    return data
+  },
+  async modelCatalog() {
+    const { data } = await http.get('/config/model/catalog')
     return data
   },
   async saveConfig(payload) {
@@ -56,6 +68,25 @@ export const api = {
   },
   async deleteMemory(id) {
     await http.delete(`/memory/${id}`)
+  },
+  async chatSessions() {
+    const { data } = await http.get('/chat/sessions')
+    return data
+  },
+  async createChatSession(payload) {
+    const { data } = await http.post('/chat/sessions', payload)
+    return data
+  },
+  async chatMessages(sessionId) {
+    const { data } = await http.get(`/chat/sessions/${sessionId}/messages`)
+    return data
+  },
+  async renameChatSession(sessionId, payload) {
+    const { data } = await http.put(`/chat/sessions/${sessionId}`, payload)
+    return data
+  },
+  async deleteChatSession(sessionId) {
+    await http.delete(`/chat/sessions/${sessionId}`)
   },
 }
 

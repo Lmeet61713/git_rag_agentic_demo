@@ -24,6 +24,7 @@ class RepoOut(ORMModel):
     last_commit_sha: str | None = None
     index_status: str = "not_indexed"
     last_indexed_at: datetime | None = None
+    summary: str | None = None
 
 
 class IndexJobOut(ORMModel):
@@ -37,13 +38,43 @@ class IndexJobOut(ORMModel):
     updated_at: datetime
 
 
+class RepoImportIn(BaseModel):
+    url: str
+
+
+class SyncLogOut(ORMModel):
+    id: int
+    repo_id: int
+    action: str = "sync"
+    status: str
+    message: str = ""
+    commit_sha: str | None = None
+    created_at: datetime
+
+
 class ChatMessageOut(ORMModel):
     id: int
     session_id: int
     role: str
     content: str
     sources: list = Field(default_factory=list)
+    tool: str | None = None
+    mode: str | None = None
     created_at: datetime
+
+
+class ChatSessionOut(ORMModel):
+    id: int
+    title: str
+    created_at: datetime
+
+
+class ChatSessionCreate(BaseModel):
+    title: str = "新会话"
+
+
+class ChatSessionUpdate(BaseModel):
+    title: str
 
 
 class SearchSource(BaseModel):
@@ -69,6 +100,8 @@ class ChatResponse(BaseModel):
     session_id: int
     answer: str
     sources: list[SearchSource] = Field(default_factory=list)
+    mode: str = "fallback"
+    tool: str = "search"
 
 
 class ModelConfigIn(BaseModel):

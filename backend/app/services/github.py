@@ -59,6 +59,12 @@ class GitHubClient:
             return data.get("default_branch") or "main"
         return "main"
 
+    async def get_repo(self, owner: str, repo: str) -> dict:
+        data = await self._get(f"/repos/{owner}/{repo}")
+        if not isinstance(data, dict):
+            raise TypeError(f"GitHub 仓库不存在：{owner}/{repo}")
+        return data
+
 
 async def exchange_github_code(code: str) -> dict:
     settings = get_settings()

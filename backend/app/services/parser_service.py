@@ -201,9 +201,13 @@ def chunk_code(text: str) -> list[tuple[str, str | None]]:
     return chunks
 
 
-async def describe_image(path: Path, file_hash: str | None = None) -> str:
+async def describe_image(
+    path: Path,
+    file_hash: str | None = None,
+    display_path: str | None = None,
+) -> str:
     settings = get_settings()
-    fallback = f"图片资源 {path.name}"
+    fallback = f"图片资源 {display_path or path.name}"
     cache = _load_image_cache()
     if file_hash and file_hash in cache:
         return cache[file_hash]
@@ -271,7 +275,7 @@ async def build_document_chunks(owner: str, repo: str) -> tuple[list[DocumentChu
         )
 
         if file_type == "image":
-            description = await describe_image(path, file_hash)
+            description = await describe_image(path, file_hash, display_path=rel)
             chunks.append(
                 DocumentChunk(
                     project_id=project_id,
@@ -322,4 +326,9 @@ async def build_document_chunks(owner: str, repo: str) -> tuple[list[DocumentChu
                         chunk_index=index,
                     )
                 )
+    from backend.app.services.tech_summary import build_project_summary
+
+    summary_chunk, summary_entry = build_project_summary(project_id, manifest, chunks)
+    chunks.append(summary_chunk)
+    manifest.append(summary_entry)
     return chunks, manifest

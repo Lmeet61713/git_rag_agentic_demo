@@ -1,8 +1,9 @@
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import get_settings
 from backend.app.models import ChatMessage, ChatSession, MemoryEntry
+from backend.app.services.embedding import chinese_tokens
 
 
 async def ensure_session(db: AsyncSession, user_id: int, session_id: int | None = None) -> ChatSession:
@@ -17,14 +18,71 @@ async def ensure_session(db: AsyncSession, user_id: int, session_id: int | None 
     return session
 
 
+async def list_sessions(db: AsyncSession, user_id: int) -> list[ChatSession]:
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .order_by(ChatSession.id.desc())
+    )
+    return list(result.scalars())
+
+
+async def create_session(db: AsyncSession, user_id: int, title: str = "新会话") -> ChatSession:
+    session = ChatSession(user_id=user_id, title=title)
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+async def get_owned_session(
+    db: AsyncSession,
+    user_id: int,
+    session_id: int,
+) -> ChatSession | None:
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def rename_session(
+    db: AsyncSession,
+    session: ChatSession,
+    title: str,
+) -> ChatSession:
+    session.title = title
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+async def delete_session(db: AsyncSession, session: ChatSession) -> None:
+    await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
+    await db.delete(session)
+    await db.commit()
+
+
 async def save_message(
     db: AsyncSession,
     session_id: int,
     role: str,
     content: str,
     sources: list | None = None,
+    tool: str = "search",
+    mode: str = "llm",
 ) -> ChatMessage:
-    message = ChatMessage(session_id=session_id, role=role, content=content, sources=sources or [])
+    message = ChatMessage(
+        session_id=session_id,
+        role=role,
+        content=content,
+        sources=sources or [],
+        tool=tool,
+        mode=mode,
+    )
     db.add(message)
     await db.commit()
     await db.refresh(message)
@@ -53,7 +111,11 @@ async def recall_long_term(
     if project_id:
         stmt = stmt.where(MemoryEntry.project_id == project_id)
     entries = list((await db.execute(stmt)).scalars())
-    query_tokens = {token for token in query.lower().split() if len(token) > 1}
+    query_tokens = {token for token in chinese_tokens(query)}
+    if not query_tokens:
+        query_tokens = {token for token in query.lower().split() if len(token) > 1}
+    if not query_tokens:
+        return []
     scored = []
     for entry in entries:
         score = 0.0
@@ -61,7 +123,8 @@ async def recall_long_term(
         for token in query_tokens:
             if token in content:
                 score += 1.0
-        scored.append((entry, score))
+        if score > 0:
+            scored.append((entry, score))
     scored.sort(key=lambda item: item[1], reverse=True)
     return [entry for entry, score in scored[:top_k]]
 
@@ -163,4 +226,18 @@ async def maybe_save_summary(db: AsyncSession, user_id: int, session_id: int) ->
     if len(messages) < 8 or len(messages) % 8 != 0:
         return
     content = "会话摘要：" + " ".join(f"{item.role}: {item.content[:200]}" for item in messages[-8:])
-    await save_long_term_memory(db, user_id, content, session_id=session_id)
+    result = await db.execute(
+        select(MemoryEntry).where(
+            MemoryEntry.user_id == user_id,
+            MemoryEntry.session_id == session_id,
+            MemoryEntry.type == "long_term",
+            MemoryEntry.content.like("会话摘要：%"),
+        )
+    )
+    existing = result.scalars().first()
+    if existing is None:
+        await save_long_term_memory(db, user_id, content, session_id=session_id)
+        return
+    existing.content = content
+    await db.commit()
+    await db.refresh(existing)
