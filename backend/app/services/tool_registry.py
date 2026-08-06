@@ -12,6 +12,7 @@ ToolName = Literal[
     "repo_meta",
     "repo_brief",
     "repo_tech",
+    "web_search",
     "overview",
     "doc_search",
     "image_search",
@@ -71,6 +72,12 @@ TOOL_CATALOG = [
         "name": "repo_brief",
         "description": "列出所有已入库仓库的名称、一句话简介和主要语言",
         "when_to_use": "用户问仓库里有什么项目、大概有哪些仓库、简单介绍所有仓库",
+        "retrieval": False,
+    },
+    {
+        "name": "web_search",
+        "description": "通过 Tavily 联网搜索获取最新、实时或网络上的信息",
+        "when_to_use": "用户问最新新闻、实时信息、网上的内容，或明确要求联网搜索",
         "retrieval": False,
     },
     {

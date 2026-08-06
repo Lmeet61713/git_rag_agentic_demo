@@ -188,6 +188,23 @@ def test_repo_brief_returns_names_and_languages():
     assert "Go" in answer
 
 
+def test_repo_brief_text_lists_repos_without_marker_gate():
+    repos = [
+        Repo(
+            id=1,
+            user_id=1,
+            owner="owner",
+            repo="demo",
+            full_name="owner/demo",
+            summary="README 摘录：示例项目\n主要语言：python 3",
+        )
+    ]
+    answer = agent._repo_brief_text(repos, {1: Counter({"python": 3})})
+    assert "owner/demo" in answer
+    assert "示例项目" in answer
+    assert "Python" in answer
+
+
 @pytest.mark.asyncio
 async def test_personalmind_informal_intro_returns_project_intro(monkeypatch):
     init_database()
@@ -265,6 +282,115 @@ async def test_general_chat_uses_llm_when_available(monkeypatch):
         assert tool == "general_chat"
         assert sources == []
         assert answer == "随便聊聊挺好的，我们换个仓库相关的问题吧。"
+
+
+@pytest.mark.asyncio
+async def test_web_search_requires_api_key(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_web_search(db, user_id):
+        return None
+
+    monkeypatch.setattr(agent.model_config, "resolve_web_search", fake_web_search)
+    async with database.session_factory() as db:
+        user = User(github_id="209", username="web-search-no-key")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "搜索一下今天的最新新闻",
+        )
+        assert session_id is not None
+        assert tool == "web_search"
+        assert sources == []
+        assert "未配置 API Key" in answer
+
+
+@pytest.mark.asyncio
+async def test_web_search_returns_results_without_llm(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_web_search(db, user_id):
+        return {
+            "provider": "tavily",
+            "api_key": "tvly-test",
+            "base_url": "https://api.tavily.com",
+            "config_error": None,
+        }
+
+    async def fake_tavily(_query, _api_key, _base_url):
+        return [
+            {
+                "project_id": "web",
+                "path": "https://example.com/news",
+                "file_type": "web",
+                "language": None,
+                "text": "示例新闻标题\n这是新闻摘要内容",
+                "score": 1.0,
+            }
+        ]
+
+    monkeypatch.setattr(agent.model_config, "resolve_web_search", fake_web_search)
+    monkeypatch.setattr(agent.web_search, "tavily_search", fake_tavily)
+    async with database.session_factory() as db:
+        user = User(github_id="210", username="web-search-ok")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "搜索一下最新 AI 新闻",
+        )
+        assert session_id is not None
+        assert tool == "web_search"
+        assert sources
+        assert sources[0]["path"] == "https://example.com/news"
+        assert "示例新闻标题" in answer
+
+
+@pytest.mark.asyncio
+async def test_web_search_error_returns_message(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_web_search(db, user_id):
+        return {
+            "provider": "tavily",
+            "api_key": "tvly-test",
+            "base_url": "https://api.tavily.com",
+            "config_error": None,
+        }
+
+    async def fake_tavily(_query, _api_key, _base_url):
+        raise RuntimeError("tavily timeout")
+
+    monkeypatch.setattr(agent.model_config, "resolve_web_search", fake_web_search)
+    monkeypatch.setattr(agent.web_search, "tavily_search", fake_tavily)
+    async with database.session_factory() as db:
+        user = User(github_id="211", username="web-search-error")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "搜索一下最新新闻",
+        )
+        assert session_id is not None
+        assert tool == "web_search"
+        assert sources == []
+        assert "联网搜索失败" in answer
 
 
 @pytest.mark.asyncio

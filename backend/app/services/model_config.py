@@ -31,6 +31,7 @@ DASHSCOPE_MODELS = [
     "qwen-vl-plus",
     "qwen-vl-max",
 ]
+TAVILY_MODELS = ["web_search"]
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def _provider_default_base_url(provider: str) -> str:
         return settings.dashscope_base_url
     if provider == "ollama":
         return settings.ollama_base_url
+    if provider == "tavily":
+        return settings.tavily_base_url
     return ""
 
 
@@ -90,6 +93,13 @@ async def model_catalog() -> list[dict]:
             "base_url": settings.ollama_base_url,
             "requires_api_key": False,
         },
+        {
+            "provider": "tavily",
+            "label": "Tavily 联网搜索",
+            "models": TAVILY_MODELS,
+            "base_url": settings.tavily_base_url,
+            "requires_api_key": True,
+        },
     ]
 
 
@@ -111,8 +121,11 @@ async def save_config(db: AsyncSession, user_id: int, data: ModelConfigIn) -> Mo
     config.base_url = data.base_url
     if data.api_key:
         config.api_key_enc = encrypt_secret(data.api_key)
-    config.is_active = data.is_active
-    if data.is_active:
+    if data.provider == "tavily":
+        config.is_active = False
+    else:
+        config.is_active = data.is_active
+    if data.is_active and data.provider != "tavily":
         await db.execute(ModelConfig.__table__.update().where(
             ModelConfig.user_id == user_id,
             ModelConfig.id != config.id,
@@ -124,7 +137,11 @@ async def save_config(db: AsyncSession, user_id: int, data: ModelConfigIn) -> Mo
 
 async def resolve_active(db: AsyncSession, user_id: int) -> dict | None:
     result = await db.execute(
-        select(ModelConfig).where(ModelConfig.user_id == user_id, ModelConfig.is_active.is_(True))
+        select(ModelConfig).where(
+            ModelConfig.user_id == user_id,
+            ModelConfig.is_active.is_(True),
+            ModelConfig.provider != "tavily",
+        )
     )
     config = result.scalar_one_or_none()
     if config is not None:
@@ -162,6 +179,35 @@ async def resolve_active(db: AsyncSession, user_id: int) -> dict | None:
             "base_url": settings.dashscope_base_url,
         }
     return None
+
+
+async def resolve_web_search(db: AsyncSession, user_id: int) -> dict | None:
+    result = await db.execute(
+        select(ModelConfig).where(
+            ModelConfig.user_id == user_id,
+            ModelConfig.provider == "tavily",
+        )
+    )
+    config = result.scalar_one_or_none()
+    api_key = ""
+    config_error = None
+    base_url = config.base_url if config and config.base_url else get_settings().tavily_base_url
+    if config and config.api_key_enc:
+        try:
+            api_key = decrypt_secret(config.api_key_enc)
+        except Exception:
+            logger.exception("resolve_web_search decrypt failed for user=%s", user_id)
+            config_error = "invalid_api_key"
+    if not api_key:
+        api_key = get_settings().tavily_api_key
+    if not api_key:
+        return None
+    return {
+        "provider": "tavily",
+        "api_key": api_key,
+        "base_url": base_url,
+        "config_error": config_error,
+    }
 
 
 async def resolve_fallback(db: AsyncSession, user_id: int) -> dict | None:

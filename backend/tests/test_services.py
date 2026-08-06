@@ -484,9 +484,12 @@ async def test_model_catalog_contains_ollama(monkeypatch):
     monkeypatch.setattr(model_config, "_list_ollama_models", fake_ollama_models)
     catalog = await model_config.model_catalog()
     providers = [item["provider"] for item in catalog]
-    assert providers == ["deepseek", "dashscope", "ollama"]
+    assert providers == ["deepseek", "dashscope", "ollama", "tavily"]
     assert "deepseek-r1:7b" in catalog[2]["models"]
     assert catalog[2]["requires_api_key"] is False
+    assert catalog[3]["provider"] == "tavily"
+    assert catalog[3]["models"] == ["web_search"]
+    assert catalog[3]["requires_api_key"] is True
 
 
 @pytest.mark.asyncio

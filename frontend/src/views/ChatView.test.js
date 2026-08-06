@@ -25,6 +25,13 @@ vi.mock('../api/client', () => ({
           text: 'README 内容',
           score: 0.8,
         },
+        {
+          project_id: 'web',
+          path: 'https://example.com/news',
+          file_type: 'web',
+          text: '新闻标题\n新闻摘要',
+          score: 1,
+        },
       ],
     })
     handlers.done({ mode: 'llm', tool: 'doc_search' })
@@ -43,6 +50,10 @@ describe('ChatView', () => {
     expect(wrapper.text()).toContain('owner/demo / README.md')
     expect(wrapper.text()).toContain('文档检索')
     expect(wrapper.text()).toContain('README 内容')
+    expect(wrapper.text()).toContain('打开链接')
+    expect(
+      wrapper.findAll('a').some((link) => link.attributes('href') === 'https://example.com/news'),
+    ).toBe(true)
   })
 })
 

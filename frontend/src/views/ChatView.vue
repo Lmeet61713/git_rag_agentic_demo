@@ -51,6 +51,7 @@ function toolText(tool) {
     image_search: '图片检索',
     doc_search: '文档检索',
     repo_brief: '仓库列表',
+    web_search: '联网搜索',
     read_file: '读取文件',
     direct: '直接回答',
     project_intro: '项目介绍',
@@ -217,6 +218,7 @@ onMounted(loadSessions)
             :class="{ active: session.id === currentSessionId }"
             @click="selectSession(session.id)"
           >
+            <span v-if="session.id === currentSessionId" class="session-badge">当前</span>
             <span class="session-title">{{ session.title }}</span>
             <span class="session-actions">
               <el-button text size="small" @click.stop="renameSession(session)">重命名</el-button>
@@ -269,11 +271,11 @@ onMounted(loadSessions)
                   <div class="source-score">相关度 {{ Number(source.score || 0).toFixed(2) }}</div>
                   <p v-if="source.text" class="source-snippet">{{ source.text.slice(0, 120) }}</p>
                   <el-link
-                    :href="fileUrl(source)"
+                    :href="source.file_type === 'web' ? source.path : fileUrl(source)"
                     target="_blank"
                     type="primary"
                   >
-                    {{ source.file_type === 'image' ? '查看图片' : '查看文件' }}
+                    {{ source.file_type === 'web' ? '打开链接' : source.file_type === 'image' ? '查看图片' : '查看文件' }}
                   </el-link>
                 </div>
               </div>
@@ -350,14 +352,34 @@ onMounted(loadSessions)
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
 }
 
 .session-item:hover {
   background: var(--surface-muted);
+  border-left-color: #b8d8d2;
 }
 
 .session-item.active {
   background: var(--accent-weak);
+  border-left-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.12);
+}
+
+.session-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  color: var(--accent-strong);
+  background: #d8f3ec;
+}
+
+.session-item.active .session-title {
+  color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .session-title {

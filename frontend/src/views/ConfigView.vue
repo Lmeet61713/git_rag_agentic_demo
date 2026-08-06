@@ -20,6 +20,7 @@ const currentProviderInfo = computed(
   () => catalog.value.find((item) => item.provider === form.provider) || null,
 )
 const modelOptions = computed(() => currentProviderInfo.value?.models || [])
+const isSearchProvider = computed(() => currentProviderInfo.value?.provider === 'tavily')
 
 async function loadModelData() {
   catalog.value = await api.modelCatalog()
@@ -44,6 +45,9 @@ function onProviderChange() {
   form.model_name = info.models.length ? info.models[0] : ''
   if (!info.requires_api_key) {
     form.api_key = ''
+  }
+  if (info.provider === 'tavily') {
+    form.is_active = false
   }
 }
 
@@ -99,7 +103,7 @@ async function save() {
         <el-form-item label="Base URL">
           <el-input v-model="form.base_url" placeholder="默认端点会自动填入" />
         </el-form-item>
-        <el-form-item label="启用">
+        <el-form-item v-if="!isSearchProvider" label="启用">
           <el-switch v-model="form.is_active" />
         </el-form-item>
         <el-form-item>

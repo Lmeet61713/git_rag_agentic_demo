@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     dashscope_vl_model: str = ""
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_models_dir: Path = Path("E:/mmmmmmmmmmmmmmmm/ollama_cache/manifests/registry.ollama.ai/library")
+    tavily_api_key: str = ""
+    tavily_base_url: str = "https://api.tavily.com"
     frontend_origin: str = "http://127.0.0.1:5173"
     github_api_base: str = "https://api.github.com"
     git_bin: str = "git"

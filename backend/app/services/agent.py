@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import IndexedFile, Repo
-from backend.app.services import memory, model_config, relevance, retrieval
+from backend.app.services import memory, model_config, relevance, retrieval, web_search
 from backend.app.services.file_service import read_project_file
 from backend.app.services.tool_registry import (
     ToolSelection,
@@ -83,13 +83,36 @@ REPO_BRIEF_MARKERS = [
     "仓库里都有什么",
     "大概有哪些",
     "有哪些项目",
+    "有哪些仓库",
+    "有哪些库",
     "介绍所有仓库",
     "简单介绍所有",
+    "介绍一下仓库",
+    "仓库简介",
+    "所有仓库",
     "所有项目",
     "项目一览",
+    "项目简介",
     "仓库列表",
     "都有什么项目",
 ]
+WEB_SEARCH_MARKERS = [
+    "联网搜索",
+    "联网",
+    "网络搜索",
+    "搜索一下",
+    "网上搜",
+    "最新",
+    "新闻",
+    "实时",
+    "网上的",
+    "网络上",
+]
+WEB_SEARCH_SYSTEM_PROMPT = (
+    "你是 MyAgentic 的本地代码助手。用户要求联网搜索。"
+    "请基于下面的联网搜索结果回答，并列出每条来源 URL；"
+    "如果结果为空或无法回答，要明确说明，不能编造事实。"
+)
 
 LANGUAGE_LABELS = {
     "python": "Python",
@@ -218,7 +241,22 @@ def _answer_mode(answer: str, tool: str, used_fallback: bool = False) -> str:
     return "llm"
 
 
-def _fallback_answer(message: str, results: list[dict], config: dict | None = None) -> str:
+def _fallback_answer(
+    message: str,
+    results: list[dict],
+    config: dict | None = None,
+    tool: str = "search",
+) -> str:
+    if tool == "web_search":
+        if results:
+            return _format_web_results(results, head="模型调用失败，以下为联网搜索结果：")
+        if config:
+            provider = PROVIDER_LABELS.get(config["provider"], config["provider"])
+            return (
+                f"联网搜索已完成，但当前模型 {provider} · {config['model']} "
+                "调用失败，无法总结结果。"
+            )
+        return "联网搜索已完成，但未配置可用的总结模型。"
     if not results:
         if config:
             provider = PROVIDER_LABELS.get(config["provider"], config["provider"])
@@ -427,15 +465,12 @@ def _format_project_intro(
     return "\n".join(lines)
 
 
-def _repo_brief_answer(
-    message: str,
+def _repo_brief_text(
     repos: list[Repo],
     language_counts: dict[int, Counter[str]] | None = None,
-) -> str | None:
-    if not any(marker in message for marker in REPO_BRIEF_MARKERS):
-        return None
+) -> str:
     if not repos:
-        return "当前还没有可同步的仓库，请先登录并刷新仓库列表。"
+        return "当前还没有已入库的仓库，请先在“仓库”页完成入库后再试。"
     lines = ["### 仓库一览"]
     counts = language_counts or {}
     for repo in sorted(repos, key=lambda item: item.repo.lower()):
@@ -443,6 +478,16 @@ def _repo_brief_answer(
         language_text = f"；主要语言：{'、'.join(languages)}" if languages else ""
         lines.append(f"- **{repo.full_name}**：{_repo_one_line(repo)}{language_text}")
     return "\n".join(lines)
+
+
+def _repo_brief_answer(
+    message: str,
+    repos: list[Repo],
+    language_counts: dict[int, Counter[str]] | None = None,
+) -> str | None:
+    if not any(marker in message for marker in REPO_BRIEF_MARKERS):
+        return None
+    return _repo_brief_text(repos, language_counts)
 
 
 def _is_tech_query(message: str) -> bool:
@@ -519,6 +564,82 @@ def _project_intro_answer(
     for repo in matches:
         lines.append(_format_project_intro(repo, counts))
     return "\n".join(lines)
+
+
+def _format_web_results(results: list[dict], head: str = "### 联网搜索结果") -> str:
+    if not results:
+        return "联网搜索没有返回结果，请换一个更具体的关键词。"
+    lines = [head]
+    for index, item in enumerate(results, start=1):
+        text = item.get("text", "")
+        first_line = text.splitlines()[0] if text else "无标题"
+        lines.append(f"{index}. **{first_line}**")
+        lines.append(f"   来源：{item.get('path', '')}")
+        snippet = "\n".join(text.splitlines()[1:])[:200] if len(text.splitlines()) > 1 else ""
+        if snippet:
+            lines.append(f"   {snippet}")
+    return "\n".join(lines)
+
+
+async def _web_search_plan(
+    db: AsyncSession,
+    session: object,
+    message: str,
+    web_config: dict | None,
+    config: dict | None,
+    fallback_config: dict | None,
+) -> dict:
+    if web_config is None:
+        return {
+            "session": session,
+            "answer": "联网搜索未配置 API Key，请到“模型配置”页填写 Tavily 联网搜索 API Key。",
+            "results": [],
+            "tool": "web_search",
+        }
+    if web_config.get("config_error"):
+        return {
+            "session": session,
+            "answer": "联网搜索 API Key 无效，请重新填写并保存。",
+            "results": [],
+            "tool": "web_search",
+        }
+    try:
+        results = await web_search.tavily_search(
+            message,
+            web_config["api_key"],
+            web_config.get("base_url", "https://api.tavily.com"),
+        )
+    except Exception as exc:
+        logger.warning("web search failed: %s", exc)
+        return {
+            "session": session,
+            "answer": f"联网搜索失败：{exc}",
+            "results": [],
+            "tool": "web_search",
+        }
+    if not results:
+        return {
+            "session": session,
+            "answer": "联网搜索没有返回结果，请换一个更具体的关键词。",
+            "results": [],
+            "tool": "web_search",
+        }
+    if config and not config.get("config_error"):
+        return {
+            "session": session,
+            "results": results,
+            "tool": "web_search",
+            "config": config,
+            "fallback_config": fallback_config,
+            "system": WEB_SEARCH_SYSTEM_PROMPT,
+            "context": _build_context([], [], results),
+        }
+    return {
+        "session": session,
+        "answer": _format_web_results(results),
+        "results": results,
+        "tool": "web_search",
+    }
 
 
 def _forced_non_retrieval_answer(
@@ -865,6 +986,7 @@ async def _plan(
     fallback_config = None
     if config and config.get("provider") != "ollama":
         fallback_config = await model_config.resolve_fallback(db, user_id)
+    web_config = await model_config.resolve_web_search(db, user_id)
     if config and config.get("config_error") and config.get("provider") != "ollama" and not fallback_config:
         provider = PROVIDER_LABELS.get(config["provider"], config["provider"])
         return {
@@ -891,6 +1013,16 @@ async def _plan(
             "tool": forced["tool"],
         }
 
+    if any(marker in message for marker in WEB_SEARCH_MARKERS):
+        return await _web_search_plan(
+            db,
+            session,
+            message,
+            web_config,
+            config,
+            fallback_config,
+        )
+
     read_match = READ_FILE_PATTERN.search(message)
     if read_match:
         content = await read_project_file(
@@ -907,6 +1039,15 @@ async def _plan(
 
     selection = await _select_tool_with_llm(config, message)
     if selection is not None:
+        if selection.tool == "web_search":
+            return await _web_search_plan(
+                db,
+                session,
+                message,
+                web_config,
+                config,
+                fallback_config,
+            )
         intro_matches = _matching_repos(message, repos, recent) if _is_intro_query(message) else []
         if intro_matches and selection.tool not in {"project_intro", "repo_brief"}:
             selection = ToolSelection(
@@ -939,8 +1080,7 @@ async def _plan(
         if tool == "repo_brief":
             return {
                 "session": session,
-                "answer": _repo_brief_answer(message, repos, language_counts)
-                or "当前还没有可展示的仓库，请先登录并刷新仓库列表。",
+                "answer": _repo_brief_text(repos, language_counts),
                 "results": [],
                 "tool": "repo_brief",
             }
@@ -1147,7 +1287,7 @@ async def ask(
             f"问题：{message}\n\n{plan.get('context', '')}",
         )
     if not answer:
-        answer = _fallback_answer(message, results, plan.get("config"))
+        answer = _fallback_answer(message, results, plan.get("config"), tool)
 
     await memory.save_message(
         db,
@@ -1201,7 +1341,7 @@ async def ask_stream(
                 answer += chunk
                 yield {"type": "token", "content": chunk}
         if not answer:
-            answer = _fallback_answer(message, results, plan.get("config"))
+            answer = _fallback_answer(message, results, plan.get("config"), tool)
             for chunk in _split_chunks(answer):
                 yield {"type": "token", "content": chunk}
     else:
