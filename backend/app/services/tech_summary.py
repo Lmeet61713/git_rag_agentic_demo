@@ -73,6 +73,9 @@ def build_project_summary(project_id: str, manifest: list[dict], chunks: list) -
         lines.append(f"README 摘要：{readme.text.strip().replace(chr(10), ' ')[:600]}")
     summary = "\n".join(lines)
     file_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+    primary_languages = "、".join(
+        f"{name} {count}" for name, count in languages.most_common(8)
+    )
     chunk = DocumentChunk(
         project_id=project_id,
         path=".project_summary.md",
@@ -81,7 +84,11 @@ def build_project_summary(project_id: str, manifest: list[dict], chunks: list) -
         language=None,
         file_hash=file_hash,
         chunk_index=0,
-        metadata={"tech_stack": "、".join(sorted(tech))},
+        metadata={
+            "tech_stack": "、".join(sorted(tech)),
+            "languages": "、".join(sorted(tech)),
+            "primary_languages": primary_languages,
+        },
     )
     entry = {
         "path": ".project_summary.md",

@@ -1,10 +1,12 @@
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from backend.app import database
 from backend.app.database import create_tables, init_database
-from backend.app.models import Repo, User
+from backend.app.models import ModelConfig, Repo, User
+from backend.app.security import encrypt_secret
 from backend.app.services import agent, relevance, retrieval, vector_store
 from backend.app.services.embedding import HashEmbedding, get_embedding
 from backend.app.services.parser_service import DocumentChunk
@@ -66,11 +68,16 @@ def test_project_summary_includes_tech_stack():
     assert entry["file_type"] == "project_summary"
     assert "vue" in summary_chunk.text
     assert "python" in summary_chunk.text
+    assert "vue" in summary_chunk.metadata["languages"]
+    assert "python" in summary_chunk.metadata["languages"]
+    assert "python 1" in summary_chunk.metadata["primary_languages"]
 
 
 def test_intro_query_detection():
     assert agent._is_intro_query("简单介绍一下项目 Homer")
     assert agent._is_intro_query("这个项目是什么")
+    assert agent._is_intro_query("这个项目大致做什么的？")
+    assert agent._is_intro_query("简单说下 PersonalMind_AI")
     assert not agent._is_intro_query("哪个仓库用了 Vue 框架？")
 
 
@@ -148,6 +155,116 @@ def test_reflect_keeps_explicit_project_scope():
             "results": [],
         }
     ) == {"file_type": None, "retry": True}
+
+
+def test_repo_brief_returns_names_and_languages():
+    repos = [
+        Repo(
+            id=1,
+            user_id=1,
+            owner="owner",
+            repo="demo",
+            full_name="owner/demo",
+            summary="README 摘录：示例项目\n主要语言：python 3",
+        ),
+        Repo(
+            id=2,
+            user_id=1,
+            owner="owner",
+            repo="golang-tool",
+            full_name="owner/golang-tool",
+            summary="README 摘录：Go 工具项目\n主要语言：go 5",
+        ),
+    ]
+    counts = {
+        1: Counter({"python": 3, "vue": 2}),
+        2: Counter({"go": 5}),
+    }
+    answer = agent._repo_brief_answer("仓库里有什么项目", repos, counts)
+    assert answer is not None
+    assert "owner/demo" in answer
+    assert "示例项目" in answer
+    assert "Python" in answer
+    assert "Go" in answer
+
+
+@pytest.mark.asyncio
+async def test_personalmind_informal_intro_returns_project_intro(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_select(_config, _message):
+        return ToolSelection(tool="search", reason="测试应被介绍意图覆盖")
+
+    monkeypatch.setattr(agent, "_select_tool_with_llm", fake_select)
+    async with database.session_factory() as db:
+        user = User(github_id="207", username="personal-intro-tester")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        repo = Repo(
+            user_id=user.id,
+            owner="Lmeet61713",
+            repo="PersonalMind_AI",
+            full_name="Lmeet61713/PersonalMind_AI",
+            index_status="indexed",
+            summary="README 摘录：个人 AI 助手项目\n主要语言：python 8",
+        )
+        db.add(repo)
+        await db.commit()
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "emmmm，那就简单介绍一下PersonalMind_AI这个项目吧，它大致做什么的？",
+        )
+        assert session_id is not None
+        assert tool == "project_intro"
+        assert sources == []
+        assert "Lmeet61713/PersonalMind_AI" in answer
+        assert "个人 AI 助手项目" in answer
+
+
+@pytest.mark.asyncio
+async def test_general_chat_uses_llm_when_available(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+
+    async def fake_llm(_config, _system, _user):
+        return "随便聊聊挺好的，我们换个仓库相关的问题吧。"
+
+    async def fake_select(_config, _message):
+        return ToolSelection(tool="general_chat", reason="闲聊")
+
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+    monkeypatch.setattr(agent, "_select_tool_with_llm", fake_select)
+    async with database.session_factory() as db:
+        user = User(github_id="208", username="general-chat-tester")
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        config = ModelConfig(
+            user_id=user.id,
+            provider="deepseek",
+            model_name="deepseek-v4-flash",
+            base_url="https://api.deepseek.com",
+            api_key_enc=encrypt_secret("fake-key"),
+            is_active=True,
+        )
+        db.add(config)
+        await db.commit()
+        session_id, answer, sources, tool = await agent.ask(
+            db,
+            user.id,
+            "今天天气怎么样？",
+        )
+        assert session_id is not None
+        assert tool == "general_chat"
+        assert sources == []
+        assert answer == "随便聊聊挺好的，我们换个仓库相关的问题吧。"
 
 
 @pytest.mark.asyncio

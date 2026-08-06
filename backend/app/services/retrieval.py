@@ -4,6 +4,46 @@ from backend.app.config import get_settings
 from backend.app.services import vector_store
 from backend.app.services.embedding import chinese_tokens, get_embedding
 
+LANGUAGE_ALIASES = {
+    "python": ["python", "py"],
+    "javascript": ["javascript", "node"],
+    "typescript": ["typescript", "ts"],
+    "vue": ["vue", "vue3", "vuejs"],
+    "react": ["react", "reactjs"],
+    "go": ["golang", "go"],
+    "rust": ["rust", "rs"],
+    "c": ["c语言", "c/c++", "cpp", "c++"],
+    "java": ["java"],
+    "kotlin": ["kotlin"],
+    "swift": ["swift"],
+    "php": ["php"],
+    "ruby": ["ruby"],
+    "sql": ["sql"],
+    "html": ["html"],
+    "css": ["css"],
+    "shell": ["shell", "bash"],
+    "json": ["json"],
+    "yaml": ["yaml", "yml"],
+}
+
+
+def _alias_in_query(alias: str, query_lower: str) -> bool:
+    compact = re.sub(r"\s+", "", query_lower)
+    if alias == "c":
+        return "c语言" in compact or "c++" in compact or "c/c++" in compact
+    if alias in {"py", "ts", "js", "go", "rs"}:
+        return re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", query_lower) is not None
+    return alias in query_lower
+
+
+def detect_languages(query: str) -> list[str]:
+    query_lower = query.lower()
+    return [
+        canonical
+        for canonical, aliases in LANGUAGE_ALIASES.items()
+        if any(_alias_in_query(alias, query_lower) for alias in aliases)
+    ]
+
 
 def _keyword_score(query: str, text: str, path: str) -> float:
     tokens = {token for token in chinese_tokens(query)}
@@ -122,12 +162,49 @@ async def project_search(
     project_id: str | None = None,
     top_k: int | None = None,
 ) -> list[dict]:
-    return await search(
+    results = await search(
         query,
         project_id=project_id,
         file_type="project_summary",
         top_k=top_k or 6,
     )
+    languages = detect_languages(query)
+    if not languages:
+        return results
+
+    store = vector_store.get_vector_store()
+    filters: dict = {"file_type": "project_summary"}
+    if project_id:
+        filters["project_id"] = project_id
+    candidates = await store.keyword_candidates(filters)
+    boosted: list[dict] = []
+    for item in candidates:
+        metadata = item.get("metadata") or {}
+        searchable = " ".join(
+            str(metadata.get(key, ""))
+            for key in ("languages", "primary_languages", "tech_stack")
+        )
+        searchable += f" {item.get('text', '')}"
+        match_count = sum(1 for lang in languages if lang in searchable.lower())
+        if match_count:
+            item["score"] = 0.55 + 0.15 * match_count
+            item["_language_boost"] = True
+            boosted.append(item)
+    if not boosted:
+        return results
+
+    merged = {
+        (item.get("project_id"), item.get("path")): item
+        for item in results
+    }
+    for item in boosted:
+        merged[(item.get("project_id"), item.get("path"))] = item
+    ranked = sorted(
+        merged.values(),
+        key=lambda item: float(item.get("score", 0.0)),
+        reverse=True,
+    )
+    return ranked[: top_k or 6]
 
 
 async def project_overview(project_id: str | None, top_k: int | None = None) -> list[dict]:

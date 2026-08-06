@@ -332,6 +332,54 @@ async def test_project_overview_prioritizes_readme(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_language_project_search_boosts_summary(monkeypatch):
+    init_database()
+    await create_tables()
+    monkeypatch.setattr(retrieval, "get_embedding", lambda: HashEmbedding())
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SqliteVectorStore())
+    store = SqliteVectorStore()
+    vectors = HashEmbedding().embed(
+        [
+            "项目：a/python\n技术栈：python\n主要语言：python 5",
+            "项目：b/vue\n技术栈：vue\n主要语言：vue 4",
+        ]
+    )
+    await store.upsert(
+        [
+            {
+                "id": "a/python:.project_summary.md:0",
+                "project_id": "a/python",
+                "path": ".project_summary.md",
+                "file_type": "project_summary",
+                "language": None,
+                "text": "项目：a/python\n技术栈：python\n主要语言：python 5",
+                "metadata": {
+                    "languages": "python",
+                    "primary_languages": "python 5",
+                },
+                "vector": vectors[0],
+            },
+            {
+                "id": "b/vue:.project_summary.md:0",
+                "project_id": "b/vue",
+                "path": ".project_summary.md",
+                "file_type": "project_summary",
+                "language": None,
+                "text": "项目：b/vue\n技术栈：vue\n主要语言：vue 4",
+                "metadata": {
+                    "languages": "vue",
+                    "primary_languages": "vue 4",
+                },
+                "vector": vectors[1],
+            },
+        ]
+    )
+    results = await retrieval.project_search("哪个仓库用 python", top_k=5)
+    assert results
+    assert results[0]["project_id"] == "a/python"
+
+
+@pytest.mark.asyncio
 async def test_agent_fallback_answer_with_sources(monkeypatch):
     init_database()
     await create_tables()

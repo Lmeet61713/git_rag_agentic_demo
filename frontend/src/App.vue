@@ -1,5 +1,5 @@
 <script setup>
-import { FolderGit2, MessageSquareText, Settings, Brain, LogOut } from 'lucide-vue-next'
+import { Boxes, FolderGit2, MessageSquareText, Settings, Brain, LogOut } from 'lucide-vue-next'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from './api/client'
@@ -97,54 +97,50 @@ watch(
 
 <template>
   <el-container v-if="store.user" class="app-shell">
-    <el-aside width="224px" class="app-aside">
-      <div class="brand">
-        <span class="brand-mark">M</span>
-        <span>MyAgentic</span>
-      </div>
-      <nav class="app-nav">
-        <router-link to="/repos" class="nav-item">
-          <FolderGit2 :size="17" />
-          <span>仓库</span>
-        </router-link>
-        <router-link to="/chat" class="nav-item">
-          <MessageSquareText :size="17" />
-          <span>聊天</span>
-        </router-link>
-        <router-link to="/config" class="nav-item">
-          <Settings :size="17" />
-          <span>模型配置</span>
-        </router-link>
-        <router-link to="/memory" class="nav-item">
-          <Brain :size="17" />
-          <span>记忆</span>
-        </router-link>
-      </nav>
-      <div class="aside-foot">
-        <div class="model-box">
-          <div class="model-label">当前模型</div>
-          <div class="model-value" :title="modelLabel">{{ modelLabel }}</div>
-          <el-button size="small" text type="primary" @click="openModelDialog">切换</el-button>
+    <el-header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-mark"><Boxes :size="16" /></span>
+          <span class="brand-name">MyAgentic</span>
         </div>
+        <nav class="app-nav">
+          <router-link to="/repos" class="nav-item">
+            <FolderGit2 :size="16" />
+            <span>仓库</span>
+          </router-link>
+          <router-link to="/chat" class="nav-item">
+            <MessageSquareText :size="16" />
+            <span>聊天</span>
+          </router-link>
+          <router-link to="/config" class="nav-item">
+            <Settings :size="16" />
+            <span>模型配置</span>
+          </router-link>
+          <router-link to="/memory" class="nav-item">
+            <Brain :size="16" />
+            <span>记忆</span>
+          </router-link>
+        </nav>
       </div>
-    </el-aside>
-    <el-container class="app-body">
-      <el-header class="app-header">
-        <div class="header-context">GitHub 公开仓库本地知识库</div>
+      <div class="header-right">
+        <button class="model-chip" type="button" @click="openModelDialog">
+          <span class="model-label">当前模型</span>
+          <span class="model-value" :title="modelLabel">{{ modelLabel }}</span>
+        </button>
         <div class="user-box">
-          <el-avatar :size="30" :src="store.user.avatar_url" />
+          <el-avatar :size="28" :src="store.user.avatar_url" />
           <span class="username">{{ store.user.username }}</span>
           <el-tooltip content="退出登录" placement="bottom">
             <el-button text circle @click="logout">
-              <LogOut :size="16" />
+              <LogOut :size="15" />
             </el-button>
           </el-tooltip>
         </div>
-      </el-header>
-      <el-main class="app-main">
-        <router-view />
-      </el-main>
-    </el-container>
+      </div>
+    </el-header>
+    <el-main class="app-main">
+      <router-view />
+    </el-main>
   </el-container>
   <router-view v-else />
 
@@ -200,113 +196,104 @@ watch(
   min-height: 100vh;
 }
 
-.app-aside {
+.app-header {
   display: flex;
-  flex-direction: column;
-  background: #101820;
-  color: #e6edf3;
-  padding: 18px 14px;
-  border-right: 1px solid #1f2937;
+  align-items: center;
+  justify-content: space-between;
+  height: 60px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 20px;
+  gap: 16px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 18px;
+  gap: 8px;
+  font-size: 16px;
   font-weight: 700;
-  padding: 4px 8px 20px;
+  color: var(--text);
+  white-space: nowrap;
 }
 
 .brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  background: #14b8a6;
-  color: #082f2b;
-  font-weight: 800;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #0f766e, #14b8a6);
+  color: #ffffff;
 }
 
 .app-nav {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 4px;
-  flex: 1;
 }
 
 .nav-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
+  gap: 6px;
+  padding: 7px 12px;
   border-radius: 7px;
-  color: #c7d1db;
+  color: var(--text-muted);
+  font-size: 13px;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .nav-item:hover {
-  background: #1f2937;
-  color: #f8fafc;
+  background: var(--surface-muted);
+  color: var(--text);
 }
 
 .nav-item.router-link-exact-active {
-  background: #14b8a6;
-  color: #082f2b;
+  background: var(--accent-weak);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 
-.aside-foot {
+.header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: #9aa7b5;
-  font-size: 12px;
-  padding: 10px 8px 0;
+  gap: 14px;
 }
 
-.model-box {
-  width: 100%;
+.model-chip {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 4px;
-  padding: 10px;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #1f2937;
+  background: var(--surface-muted);
+  cursor: pointer;
+  text-align: left;
 }
 
 .model-label {
-  color: #8b98a5;
-  font-size: 11px;
+  font-size: 10px;
+  color: var(--text-muted);
 }
 
 .model-value {
-  color: #f8fafc;
   font-size: 12px;
-  line-height: 1.4;
-  word-break: break-all;
-}
-
-.app-body {
-  min-width: 0;
-}
-
-.app-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 58px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-}
-
-.header-context {
-  color: var(--text-muted);
-  font-size: 13px;
+  color: var(--text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-box {

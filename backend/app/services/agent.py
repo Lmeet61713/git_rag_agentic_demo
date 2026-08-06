@@ -1,12 +1,13 @@
 import logging
 import re
+from collections import Counter, defaultdict
 from typing import TypedDict
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import Repo
+from backend.app.models import IndexedFile, Repo
 from backend.app.services import memory, model_config, relevance, retrieval
 from backend.app.services.file_service import read_project_file
 from backend.app.services.tool_registry import (
@@ -67,6 +68,52 @@ PROVIDER_LABELS = {
     "deepseek": "DeepSeek",
     "dashscope": "阿里云 DashScope",
     "ollama": "本地 Ollama",
+}
+
+GENERAL_CHAT_FALLBACK = (
+    "我主要回答已入库 GitHub 仓库的代码、文档、图片和项目概览问题。"
+    "你刚才的问题不属于仓库问答，我暂时不擅长，建议换一个与项目相关的问题。"
+)
+CHAT_SYSTEM_PROMPT = (
+    "你是 MyAgentic 的本地代码助手。用户正在和你闲聊或问与仓库无关的问题。"
+    "请用简短、自然、友好的中文回答，不要检索仓库，不要编造事实。"
+)
+REPO_BRIEF_MARKERS = [
+    "仓库里有什么",
+    "仓库里都有什么",
+    "大概有哪些",
+    "有哪些项目",
+    "介绍所有仓库",
+    "简单介绍所有",
+    "所有项目",
+    "项目一览",
+    "仓库列表",
+    "都有什么项目",
+]
+
+LANGUAGE_LABELS = {
+    "python": "Python",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "vue": "Vue",
+    "react": "React",
+    "go": "Go",
+    "rust": "Rust",
+    "c": "C",
+    "cpp": "C++",
+    "java": "Java",
+    "kotlin": "Kotlin",
+    "swift": "Swift",
+    "php": "PHP",
+    "ruby": "Ruby",
+    "sql": "SQL",
+    "html": "HTML",
+    "css": "CSS",
+    "shell": "Shell",
+    "bash": "Bash",
+    "json": "JSON",
+    "yaml": "YAML",
+    "markdown": "Markdown",
 }
 
 
@@ -248,18 +295,37 @@ def _general_chat_answer(message: str) -> str | None:
     )
 
 
-def _out_of_scope_plan(session: object, message: str) -> dict:
+def _general_chat_plan(
+    session: object,
+    message: str,
+    config: dict | None,
+) -> dict:
+    if config and not config.get("config_error"):
+        return {
+            "session": session,
+            "results": [],
+            "tool": "general_chat",
+            "config": config,
+            "system": CHAT_SYSTEM_PROMPT,
+            "context": "",
+        }
     return {
         "session": session,
         "answer": _general_chat_answer(message)
-        or (
-            "我主要回答已入库 GitHub 仓库的代码、文档、图片和项目概览问题。"
-            "你刚才的问题不属于仓库问答，我暂时不擅长，建议换一个与项目相关的问题。"
-        ),
+        or GENERAL_CHAT_FALLBACK,
         "results": [],
         "tool": "general_chat",
+        "config": config,
         "out_of_scope": True,
     }
+
+
+def _out_of_scope_plan(
+    session: object,
+    message: str,
+    config: dict | None = None,
+) -> dict:
+    return _general_chat_plan(session, message, config)
 
 
 def _format_repo_time(value: str | None) -> str:
@@ -293,6 +359,92 @@ def _repo_meta_answer(message: str, repos: list[Repo]) -> str | None:
     return "\n".join(lines)
 
 
+def _normalize_repo_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _language_label(value: str) -> str:
+    return LANGUAGE_LABELS.get(value.lower(), value)
+
+
+def _languages_from_summary(summary: str | None) -> list[str]:
+    if not summary:
+        return []
+    for line in summary.splitlines():
+        if line.startswith("主要语言："):
+            raw = line[len("主要语言："):]
+            return [
+                _language_label(part.split()[0])
+                for part in raw.split("、")
+                if part.strip()
+            ]
+    return []
+
+
+def _repo_one_line(repo: Repo) -> str:
+    if repo.summary:
+        for line in repo.summary.splitlines():
+            if line.startswith("README 摘录："):
+                excerpt = line[len("README 摘录："):].strip()
+                if excerpt:
+                    return excerpt
+        if not repo.summary.startswith("索引完成"):
+            first_line = repo.summary.splitlines()[0].strip()
+            if first_line:
+                return first_line
+    return "已入库项目，详情见仓库页。"
+
+
+def _repo_language_list(
+    repo_id: int,
+    repo: Repo,
+    language_counts: dict[int, Counter[str]],
+) -> list[str]:
+    counts = language_counts.get(repo_id)
+    if counts:
+        return [_language_label(language) for language, _ in counts.most_common()]
+    return _languages_from_summary(repo.summary)
+
+
+def _format_project_intro(
+    repo: Repo,
+    language_counts: dict[int, Counter[str]] | None = None,
+) -> str:
+    lines = [f"### {repo.full_name}"]
+    lines.append(f"- **简介**：{_repo_one_line(repo)}")
+    languages = _repo_language_list(
+        repo.id,
+        repo,
+        language_counts or {},
+    )
+    if languages:
+        lines.append(f"- **主要语言**：{'、'.join(languages)}")
+    if repo.summary:
+        for line in repo.summary.splitlines():
+            if line.startswith("主要目录："):
+                lines.append(f"- **主要目录**：{line[len('主要目录：'):]}")
+                break
+    return "\n".join(lines)
+
+
+def _repo_brief_answer(
+    message: str,
+    repos: list[Repo],
+    language_counts: dict[int, Counter[str]] | None = None,
+) -> str | None:
+    if not any(marker in message for marker in REPO_BRIEF_MARKERS):
+        return None
+    if not repos:
+        return "当前还没有可同步的仓库，请先登录并刷新仓库列表。"
+    lines = ["### 仓库一览"]
+    counts = language_counts or {}
+    for repo in sorted(repos, key=lambda item: item.repo.lower()):
+        languages = _repo_language_list(repo.id, repo, counts)
+        language_text = f"；主要语言：{'、'.join(languages)}" if languages else ""
+        lines.append(f"- **{repo.full_name}**：{_repo_one_line(repo)}{language_text}")
+    return "\n".join(lines)
+
+
 def _is_tech_query(message: str) -> bool:
     markers = [
         "技术栈",
@@ -314,10 +466,16 @@ def _is_intro_query(message: str) -> bool:
     markers = [
         "介绍一下",
         "简单介绍",
+        "简单说下",
+        "简单说说",
+        "介绍下",
         "项目介绍",
         "项目是做什么",
         "项目是什么",
         "这是什么项目",
+        "大致做什么",
+        "是干嘛的",
+        "是做什么的",
         "概述",
         "概要",
         "简介",
@@ -327,14 +485,27 @@ def _is_intro_query(message: str) -> bool:
 
 def _matching_repos(message: str, repos: list[Repo], recent: list) -> list[Repo]:
     haystack = f"{message} {' '.join(item.content for item in recent[-6:])}".lower()
+    normalized_haystack = _normalize_repo_name(haystack)
     matches = []
     for repo in repos:
-        if repo.full_name.lower() in haystack or repo.repo.lower() in haystack:
+        if (
+            repo.full_name.lower() in haystack
+            or repo.repo.lower() in haystack
+            or (
+                _normalize_repo_name(repo.repo)
+                and _normalize_repo_name(repo.repo) in normalized_haystack
+            )
+        ):
             matches.append(repo)
     return matches
 
 
-def _project_intro_answer(message: str, repos: list[Repo], recent: list) -> str | None:
+def _project_intro_answer(
+    message: str,
+    repos: list[Repo],
+    recent: list,
+    language_counts: dict[int, Counter[str]] | None = None,
+) -> str | None:
     if not _is_intro_query(message):
         return None
     matches = _matching_repos(message, repos, recent)
@@ -344,12 +515,9 @@ def _project_intro_answer(message: str, repos: list[Repo], recent: list) -> str 
             "我可以用项目摘要直接介绍，不需要先做向量检索。"
         )
     lines = []
+    counts = language_counts or {}
     for repo in matches:
-        lines.append(f"项目 {repo.full_name}：")
-        if repo.summary:
-            lines.append(repo.summary)
-        else:
-            lines.append("该仓库还没有生成项目摘要，请先完成入库。")
+        lines.append(_format_project_intro(repo, counts))
     return "\n".join(lines)
 
 
@@ -358,6 +526,7 @@ def _forced_non_retrieval_answer(
     config: dict | None,
     repos: list[Repo],
     recent: list,
+    language_counts: dict[int, Counter[str]] | None = None,
 ) -> dict | None:
     direct_markers = [
         "请问你是",
@@ -412,8 +581,15 @@ def _forced_non_retrieval_answer(
             ),
             "tool": "app_guide",
         }
+    if any(marker in message for marker in REPO_BRIEF_MARKERS):
+        answer = _repo_brief_answer(message, repos, language_counts)
+        return {
+            "answer": answer
+            or "当前还没有可展示的仓库，请先登录并刷新仓库列表。",
+            "tool": "repo_brief",
+        }
     if any(marker in message for marker in intro_markers):
-        answer = _project_intro_answer(message, repos, recent)
+        answer = _project_intro_answer(message, repos, recent, language_counts)
         return {
             "answer": answer or "请告诉我你想了解哪个仓库，例如 `Lmeet61713/YueDu`。",
             "tool": "project_intro",
@@ -677,6 +853,14 @@ async def _plan(
     result = await db.execute(select(Repo).where(Repo.user_id == user_id))
     repos = list(result.scalars())
     recent = await memory.recent_messages(db, session.id)
+    language_result = await db.execute(
+        select(IndexedFile.repo_id, IndexedFile.language, func.count(IndexedFile.id))
+        .where(IndexedFile.language.is_not(None))
+        .group_by(IndexedFile.repo_id, IndexedFile.language)
+    )
+    language_counts: dict[int, Counter[str]] = defaultdict(Counter)
+    for repo_id, language, count in language_result:
+        language_counts[repo_id][language] = count
     config = await model_config.resolve_active(db, user_id)
     fallback_config = None
     if config and config.get("provider") != "ollama":
@@ -692,7 +876,13 @@ async def _plan(
             "results": [],
             "tool": "config_error",
         }
-    forced = _forced_non_retrieval_answer(message, config, repos, recent)
+    forced = _forced_non_retrieval_answer(
+        message,
+        config,
+        repos,
+        recent,
+        language_counts,
+    )
     if forced:
         return {
             "session": session,
@@ -717,6 +907,13 @@ async def _plan(
 
     selection = await _select_tool_with_llm(config, message)
     if selection is not None:
+        intro_matches = _matching_repos(message, repos, recent) if _is_intro_query(message) else []
+        if intro_matches and selection.tool not in {"project_intro", "repo_brief"}:
+            selection = ToolSelection(
+                tool="project_intro",
+                project_id=intro_matches[0].full_name,
+                reason="口语化项目介绍，避免降级到向量检索",
+            )
         tool = selection.tool
         if tool == "direct":
             return {
@@ -738,24 +935,21 @@ async def _plan(
                 "tool": "app_guide",
             }
         if tool == "general_chat":
+            return _general_chat_plan(session, message, config)
+        if tool == "repo_brief":
             return {
                 "session": session,
-                "answer": _general_chat_answer(message)
-                or (
-                    "我主要回答已入库 GitHub 仓库的代码、文档、图片和项目概览问题。"
-                    "你刚才的问题不属于仓库问答，我暂时不擅长，建议换一个与项目相关的问题。"
-                ),
+                "answer": _repo_brief_answer(message, repos, language_counts)
+                or "当前还没有可展示的仓库，请先登录并刷新仓库列表。",
                 "results": [],
-                "tool": "general_chat",
+                "tool": "repo_brief",
             }
         if tool == "project_intro":
-            intro_answer = _project_intro_answer(message, repos, recent)
+            intro_answer = _project_intro_answer(message, repos, recent, language_counts)
             if intro_answer is None and selection.project_id:
                 for repo in repos:
                     if repo.full_name == selection.project_id:
-                        intro_answer = (
-                            f"项目 {repo.full_name}：\n{repo.summary or '该仓库还没有生成项目摘要，请先完成入库。'}"
-                        )
+                        intro_answer = _format_project_intro(repo, language_counts)
                         break
             return {
                 "session": session,
@@ -811,7 +1005,7 @@ async def _plan(
         else:
             state = await graph.ainvoke(state)
         if state.get("out_of_scope"):
-            return _out_of_scope_plan(session, message)
+            return _out_of_scope_plan(session, message, config)
         state["context"] = _build_context(recent[-10:], memories, state.get("results", []))
         state.update(
             {
@@ -832,7 +1026,7 @@ async def _plan(
     if app_guide:
         return {"session": session, "answer": app_guide, "results": [], "tool": "app_guide"}
 
-    intro_answer = _project_intro_answer(message, repos, recent)
+    intro_answer = _project_intro_answer(message, repos, recent, language_counts)
     if intro_answer:
         return {"session": session, "answer": intro_answer, "results": [], "tool": "project_intro"}
     if not _is_tech_query(message):
@@ -861,7 +1055,7 @@ async def _plan(
     else:
         state = await graph.ainvoke(state)
     if state.get("out_of_scope"):
-        return _out_of_scope_plan(session, message)
+        return _out_of_scope_plan(session, message, config)
     state["context"] = _build_context(recent[-10:], memories, state.get("results", []))
     state.update(
         {
@@ -942,14 +1136,15 @@ async def ask(
     tool = plan.get("tool") or "search"
     answer = plan.get("answer")
     used_fallback = False
+    system_prompt = plan.get("system") or _SYSTEM_PROMPT
     if plan.get("answer"):
         answer = plan["answer"]
     elif plan.get("config"):
         answer, used_fallback = await _call_llm_chain(
             plan["config"],
             plan.get("fallback_config"),
-            _SYSTEM_PROMPT,
-            f"问题：{message}\n\n{plan['context']}",
+            system_prompt,
+            f"问题：{message}\n\n{plan.get('context', '')}",
         )
     if not answer:
         answer = _fallback_answer(message, results, plan.get("config"))
@@ -985,13 +1180,14 @@ async def ask_stream(
 
     answer = plan.get("answer")
     used_fallback = False
+    system_prompt = plan.get("system") or _SYSTEM_PROMPT
     if answer is None:
         answer = ""
         if plan.get("config") and not plan["config"].get("config_error"):
             async for chunk in _stream_llm(
                 plan["config"],
-                _SYSTEM_PROMPT,
-                f"问题：{message}\n\n{plan['context']}",
+                system_prompt,
+                f"问题：{message}\n\n{plan.get('context', '')}",
             ):
                 answer += chunk
                 yield {"type": "token", "content": chunk}
@@ -999,8 +1195,8 @@ async def ask_stream(
             used_fallback = True
             async for chunk in _stream_llm(
                 plan["fallback_config"],
-                _SYSTEM_PROMPT,
-                f"问题：{message}\n\n{plan['context']}",
+                system_prompt,
+                f"问题：{message}\n\n{plan.get('context', '')}",
             ):
                 answer += chunk
                 yield {"type": "token", "content": chunk}

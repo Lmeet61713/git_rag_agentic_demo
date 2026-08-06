@@ -10,6 +10,7 @@ ToolName = Literal[
     "general_chat",
     "project_intro",
     "repo_meta",
+    "repo_brief",
     "repo_tech",
     "overview",
     "doc_search",
@@ -64,6 +65,12 @@ TOOL_CATALOG = [
         "name": "repo_meta",
         "description": "查询仓库创建时间、排序或仓库列表",
         "when_to_use": "用户问最早/最近创建、仓库列表、按时间排序",
+        "retrieval": False,
+    },
+    {
+        "name": "repo_brief",
+        "description": "列出所有已入库仓库的名称、一句话简介和主要语言",
+        "when_to_use": "用户问仓库里有什么项目、大概有哪些仓库、简单介绍所有仓库",
         "retrieval": False,
     },
     {

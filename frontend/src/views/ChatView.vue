@@ -3,6 +3,7 @@ import { nextTick, onMounted, ref } from 'vue'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import { api, chatStream } from '../api/client'
 
 const messages = ref([])
@@ -13,6 +14,12 @@ const sessions = ref([])
 const currentSessionId = ref(null)
 const loadingSessions = ref(false)
 const loadingMessages = ref(false)
+const sessionCollapsed = ref(localStorage.getItem('chat.sessionsCollapsed') === '1')
+
+function toggleSessions() {
+  sessionCollapsed.value = !sessionCollapsed.value
+  localStorage.setItem('chat.sessionsCollapsed', sessionCollapsed.value ? '1' : '0')
+}
 
 function fileUrl(source) {
   const [owner, repo] = source.project_id.split('/')
@@ -43,6 +50,7 @@ function toolText(tool) {
     overview: '项目概览',
     image_search: '图片检索',
     doc_search: '文档检索',
+    repo_brief: '仓库列表',
     read_file: '读取文件',
     direct: '直接回答',
     project_intro: '项目介绍',
@@ -196,7 +204,7 @@ onMounted(loadSessions)
 <template>
   <div class="page chat-page">
     <div class="chat-layout">
-      <aside class="session-panel">
+      <aside class="session-panel" :class="{ collapsed: sessionCollapsed }">
         <div class="session-toolbar">
           <strong>会话</strong>
           <el-button size="small" type="primary" @click="newSession">新建会话</el-button>
@@ -221,7 +229,19 @@ onMounted(loadSessions)
         </div>
       </aside>
       <div class="chat-main">
-        <div class="toolbar chat-toolbar"><h2>Agent 问答</h2></div>
+        <div class="toolbar chat-toolbar">
+          <h2>Agent 问答</h2>
+          <el-button
+            text
+            circle
+            size="small"
+            :title="sessionCollapsed ? '展开会话' : '收起会话'"
+            @click="toggleSessions"
+          >
+            <PanelLeftClose v-if="!sessionCollapsed" :size="16" />
+            <PanelLeftOpen v-else :size="16" />
+          </el-button>
+        </div>
         <div ref="listRef" class="message-list" v-loading="loadingMessages">
           <div v-for="(msg, index) in messages" :key="index" class="message-row" :class="msg.role">
             <div class="bubble">
@@ -292,6 +312,7 @@ onMounted(loadSessions)
 
 .session-panel {
   width: 280px;
+  min-width: 0;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -299,6 +320,12 @@ onMounted(loadSessions)
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+  transition: width 0.18s ease, border-color 0.18s ease;
+}
+
+.session-panel.collapsed {
+  width: 0;
+  border-color: transparent;
 }
 
 .session-toolbar {

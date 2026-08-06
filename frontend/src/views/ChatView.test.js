@@ -51,13 +51,24 @@ describe('ChatView sessions', () => {
     api.chatSessions.mockResolvedValue([{ id: 7, title: '历史会话' }])
     api.chatMessages.mockResolvedValue([
       { role: 'user', content: '上一轮问题', sources: [] },
-      { role: 'assistant', content: '上一轮答案', sources: [], tool: 'doc_search', mode: 'llm' },
+      { role: 'assistant', content: '上一轮答案', sources: [], tool: 'repo_brief', mode: 'llm' },
     ])
     const wrapper = await mount(ChatView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     expect(wrapper.text()).toContain('历史会话')
     expect(wrapper.text()).toContain('上一轮问题')
     expect(wrapper.text()).toContain('上一轮答案')
-    expect(wrapper.text()).toContain('文档检索')
+    expect(wrapper.text()).toContain('仓库列表')
+  })
+
+  it('collapses the session panel without leaving placeholder space', async () => {
+    localStorage.clear()
+    const wrapper = await mount(ChatView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.find('.session-panel.collapsed').exists()).toBe(false)
+    const toggle = wrapper.findAll('button').find((button) => button.attributes('title') === '收起会话')
+    await toggle.trigger('click')
+    expect(wrapper.find('.session-panel.collapsed').exists()).toBe(true)
+    expect(localStorage.getItem('chat.sessionsCollapsed')).toBe('1')
   })
 })
